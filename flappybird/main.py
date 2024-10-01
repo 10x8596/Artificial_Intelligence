@@ -68,11 +68,16 @@ def eval_genomes(genomes, config):
                 if ball.collision().colliderect(top_rect) or ball.collision().colliderect(bottom_rect):
                     # decrease fitness score for that bird
                     ge[x].fitness -= 1
+                    balls.pop(x)
+                    nets.pop(x)
+                    ge.pop(x)
                     
         # Check if ball hits the ground or flies off screen
-        for ball in balls:
+        for x, ball in enumerate(balls):
             if ball.y >= WINDOW_HEIGHT or ball.y <= 0:
-                pass
+                balls.pop(x)
+                nets.pop(x)
+                ge.pop(x)
 
         # Increment score 
         for pipe in pipes:
@@ -80,6 +85,9 @@ def eval_genomes(genomes, config):
                 if pipe.x + pipe.width < ball.x and not hasattr(pipe, 'passed'):
                     pipe.passed = True
                     score += 1
+                    # increase ball's fitness score 
+                    for g in ge:
+                        g.fitness += 5
 
         # Increase game speed every 30 points
         if score > 0 and score % SPEED_INCREASE_THRESHOLD == 0:
