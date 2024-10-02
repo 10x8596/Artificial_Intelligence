@@ -17,6 +17,7 @@ class PingPong:
         """
         
         net = neat.nn.FeedForwardNetwork.create(genome, config)
+        net2 = neat.nn.FeedForwardNetwork.create(genome, config)
         
         runGame = True
         clock = pygame.time.Clock()
@@ -25,28 +26,38 @@ class PingPong:
             clock.tick(120) # set 120 fps
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    runGame = False
-                    break
-    
-            keys = pygame.key.get_pressed()
-            if keys[pygame.K_w]:
-                self.game.move_paddle(left=True, up=True)
-            if keys[pygame.K_s]:
-                self.game.move_paddle(left=True, up=False)
+                    quit()
+            
+            # Player controls
+            #keys = pygame.key.get_pressed()
+            #if keys[pygame.K_w]:
+            #    self.game.move_paddle(left=True, up=True)
+            #if keys[pygame.K_s]:
+            #    self.game.move_paddle(left=True, up=False)
 
             output = net.activate((self.right_paddle.y, self.ball.y, 
                                      abs(self.right_paddle.x - self.ball.x)))
             decision = output.index(max(output))
+            output2 = net2.activate((self.left_paddle.y, self.ball.y,
+                                     abs(self.left_paddle.x - self.ball.x)))
+            decision2 = output2.index(max(output2))
 
             if decision == 0:
                 pass
             elif decision == 1:
                 self.game.move_paddle(left=False, up=True)
             else:
-                self.game.move_paddle(left=False, up=False) 
+                self.game.move_paddle(left=False, up=False)
+
+            if decision2 == 0:
+                pass 
+            elif decision2 == 1:
+                self.game.move_paddle(left=True, up=True)
+            else:
+                self.game.move_paddle(left=True, up=False)
 
             game_info = self.game.loop()
-            print(game_info.left_score, game_info.right_score)
+            #print(game_info.left_score, game_info.right_score)
             self.game.draw()
             pygame.display.update()
 
