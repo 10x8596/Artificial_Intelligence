@@ -5,7 +5,8 @@ import os
 from constants import *
 import pickle
 import neat
-from flappybird import Ball, Pipe
+from flappybird import Ball 
+from flappybird import Pipe
 
 # Inputs = ball.y, top pipe, bottom pipe (3 neurons)
 # Output = jump or fall (1 neuron)
@@ -32,62 +33,80 @@ def eval_genomes(genomes, config):
     score = 0
     game_active = True
     pipe_speed = PIPE_SPEED
-    ai_mode = False
-    model = None
 
     # setup neural networks for genomes 
-    for g in genomes:
-        net = neat.nn.FeedForwardNetwork(g, config)
+    for _, g in genomes:
+        net = neat.nn.FeedForwardNetwork.create(g, config)
         nets.append(net)
         balls.append(Ball()) # Ball(230, 350)
         g.fitness = 0
         # initial fitness is 0
         ge.append(g)
+    
+    # Debugging
+    print(f"Balls: {len(balls)}, Pipes: {len(pipes)}") 
 
     # Game loop
     while game_active:
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                game_active = False
+                pygame.quit()
+                sys.exit()
         
-        for ball in balls:
+        # Find the closest pipe
+        if len(balls) > 0 and len(pipes) > 0:
+            pipe_idx = 0
+            # find the closest pipe by checking the x-position
+            for i, pipe in enumerate(pipes):
+                # pipe ahead of the ball
+                if pipe.x + pipe.width > balls[0].x:
+                    pipe_idx = i 
+                    break
+        else:
+            game_active = False
+            break
+        
+        # move and update balls 
+        removal_indices = []
+        for x, ball in enumerate(balls):
             ball.apply_gravity()
+
+            top_rect, bottom_rect = pipes[pipe_idx].get_rects()
+
+            # neural network output 
+            ge[x].fitness += 0.1
+            output = nets[x].activate((ball.y, abs(ball.y - top_rect.y), abs(ball.y - bottom_rect.y)))
+            if output[0] > 0.5:
+                ball.jump()
+
+            # check for collision 
+            if ball.collision().colliderect(top_rect) or ball.collision().colliderect(bottom_rect) or ball.y >= WINDOW_HEIGHT or ball.y <= 0:
+                ge[x].fitness -= 1 
+                removal_indices.append(x)
+
+        # remove collided balls 
+        for i in sorted(removal_indices, reverse=True):
+            balls.pop(i)
+            nets.pop(i)
+            ge.pop(i)
 
         # pipe movement and adding new pipes 
         if pipes[-1].x < WINDOW_WIDTH // 2:
             pipes.append(Pipe(pipe_speed))
-        pipes = [pipe for pipe in pipes if pipe.x > -PIPE_WIDTH]
-
-        # update pipes and check for collision
         for pipe in pipes:
             pipe.move()
-            top_rect, bottom_rect = pipe.get_rects()
-            for x, ball in enumerate(balls):
-                # get rid of birds the hit pipe
-                if ball.collision().colliderect(top_rect) or ball.collision().colliderect(bottom_rect):
-                    # decrease fitness score for that bird
-                    ge[x].fitness -= 1
-                    balls.pop(x)
-                    nets.pop(x)
-                    ge.pop(x)
-                    
-        # Check if ball hits the ground or flies off screen
-        for x, ball in enumerate(balls):
-            if ball.y >= WINDOW_HEIGHT or ball.y <= 0:
-                balls.pop(x)
-                nets.pop(x)
-                ge.pop(x)
+        pipes = [pipe for pipe in pipes if pipe.x > -PIPE_WIDTH]
 
         # Increment score 
         for pipe in pipes:
-            for ball in balls:
-                if pipe.x + pipe.width < ball.x and not hasattr(pipe, 'passed'):
+            for x, ball in enumerate(balls):
+                if pipe.x + pipe.width < ball.x and not pipe.passed:
                     pipe.passed = True
                     score += 1
-                    # increase ball's fitness score 
-                    for g in ge:
-                        g.fitness += 5
+                    # increase fitness score for ball's that passed 
+                    ge[x].fitness += 5 
+                    
 
         # Increase game speed every 30 points
         if score > 0 and score % SPEED_INCREASE_THRESHOLD == 0:
@@ -110,37 +129,22 @@ def eval_genomes(genomes, config):
         pygame.display.flip()
 
         # Frame rate 
-        clock.tick(FPS) 
+        clock.tick(FPS)
 
-    def test_ai(self, genome):
-        pass 
-
-    def train_ai(self, genomes):
-        pass 
-
-    def calculate_fitness():
-        pass 
-
+# Training 
 def run_neat(config):
     # population = neat.Checkpointer.restore_checkpoint('./checkpoints/neat-checkpoint-')
     population = neat.Population(config)
     population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     population.add_reporter(stats)
-    population.add_reporter(neat.Checkpointer(1))
     
     # evaluate genomes up to 100 times
-    best_genome = population.run(eval_genomes, 100) # change to 1 when restoring checkpoint
+    best_genome = population.run(eval_genomes, 300)
 
     # Save the neural network using pickle
     with open("bestgenome.pickle", "wb") as f:
         pickle.dump(best_genome, f)
-
-def test_ai(config):
-    with open("bestgenome.pickle", "rb") as f:
-        best_genome = pickle.load(f)
-    flappy_bird = FlappyBird()
-    flappy_bird.test_ai(best_genome)
 
 if __name__ == "__main__":
     local_dir = os.path.dirname(__file__)
@@ -149,10 +153,7 @@ if __name__ == "__main__":
     config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
                          neat.DefaultSpeciesSet, neat.DefaultStagnation,
                          config_path)
-    
+
     # train AI
-    #run_neat(config)
-    # Load AI from pickle to test
-    #test_ai(config)
-    eval_genomes()
+    run_neat(config)
 

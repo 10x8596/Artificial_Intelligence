@@ -3,6 +3,8 @@ import random
 import sys
 from constants import *
 import pickle
+import os
+import neat
 
 class Ball:
 
@@ -29,35 +31,43 @@ class Pipe:
 
     def __init__(self, speed):
         self.x = WINDOW_WIDTH
-        self.height = random.randint(100, 400)
+        self.top_height = random.randint(MIN_PIPE_HEIGHT, MAX_PIPE_HEIGHT)
+        self.bottom_height = WINDOW_HEIGHT - self.top_height - PIPE_GAP
         self.width = PIPE_WIDTH
         self.speed = speed
+        self.passed = False
 
     def move(self):
         self.x -= self.speed
 
     def draw(self, surface):
         # top pipe 
-        pygame.draw.rect(surface, WHITE, (self.x, 0, self.width, self.height))
+        pygame.draw.rect(surface, WHITE, (self.x, 0, self.width, self.top_height))
         # bottom pipe (with gap)
-        pygame.draw.rect(surface, WHITE, (self.x, self.height + PIPE_GAP, self.width, WINDOW_HEIGHT - self.height - PIPE_GAP))
+        pygame.draw.rect(surface, WHITE, (self.x, WINDOW_HEIGHT - self.bottom_height, self.width, self.bottom_height))
 
     def get_rects(self):
-        top_pipe_rect = pygame.Rect(self.x, 0, self.width, self.height)
-        bottom_pipe_rect = pygame.Rect(self.x, self.height + PIPE_GAP, self.width, WINDOW_HEIGHT - self.height - PIPE_GAP)
+        top_pipe_rect = pygame.Rect(self.x, 0, self.width, self.top_height)
+        bottom_pipe_rect = pygame.Rect(self.x, WINDOW_HEIGHT - self.bottom_height, self.width, self.bottom_height)
         return top_pipe_rect, bottom_pipe_rect
 
-def AI(ball, pipes):
-    
-    # Calculate the gradient from the ball to the gap.
-    # If gradient is negative, need to fall
-    # If gradient is positive, need to jump 
-    # else maintain a gradient of 0 if at 0 
-    pass
+def test_ai(config_path):
 
+    # Load the best genome from pickle 
+    with open("bestgenome.pickle", "rb") as f:
+        best_genome = pickle.load(f)
+
+    config = neat.Config(neat.DefaultGenome, neat.DefaultReproduction,
+                         neat.DefaultSpeciesSet, neat.DefaultStagnation,
+                         config_path)
+
+    # Create a neural network from the best genome
+    net = neat.nn.FeedForwardNetwork.create(best_genome, config)
+    
+    return net, config 
 
 class Game:
-    def __init__(self):
+    def __init__(self, ai_net=None):
         pygame.init()
 
         window_size = (WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -70,9 +80,23 @@ class Game:
         self.ball = Ball()
         self.pipes = [Pipe(PIPE_SPEED)]
         self.score = 0
+        self.high_score = self.load_high_score()
         self.game_active = True
         self.pipe_speed = PIPE_SPEED
         self.ai_mode = False
+
+        # AI neural network 
+        self.ai_net = ai_net
+
+    def save_high_score(self):
+        with open("high_score.txt", "w") as f:
+            f.write(str(self.high_score))
+
+    def load_high_score(self):
+        if os.path.exists("high_score.txt"):
+            with open("high_score.txt", "r") as f:
+                return int(f.read().strip())
+        return 0
     
     def restart_game(self):
         self.ball = Ball()
@@ -104,11 +128,24 @@ class Game:
         if self.game_active:
 
             self.ball.apply_gravity()
-
+#---------------------------------------------------------------------------------------
+            
             # AI control 
-            if self.ai_mode:
-                if AI(self.ball, self.pipes):
+            if self.ai_mode and self.ai_net:
+                # Get the closest pipe 
+                if len(self.pipes) > 0:
+                    pipe = self.pipes[0]
+                    if pipe.x + pipe.width < self.ball.x and len(self.pipes) > 1:
+                        pipe = self.pipes[1]
+
+                # AI decision making based on nn output
+                top_rect, bottom_rect = pipe.get_rects()
+                output = self.ai_net.activate((self.ball.y, abs(self.ball.y - top_rect.y), abs(self.ball.y - bottom_rect.y)))
+                
+                if output[0] > 0.5:
                     self.ball.jump()
+
+#---------------------------------------------------------------------------------------
 
             # pipe movement and adding new pipes 
             if self.pipes[-1].x < WINDOW_WIDTH // 2:
@@ -129,7 +166,7 @@ class Game:
 
             # Increment score 
             for pipe in self.pipes:
-                if pipe.x + pipe.width < self.ball.x and not hasattr(pipe, 'passed'):
+                if pipe.x + pipe.width < self.ball.x and not pipe.passed:
                     pipe.passed = True
                     self.score += 1
 
@@ -151,6 +188,10 @@ class Game:
         score_surface = font.render(f'Score: {self.score}', True, 'red')
         self.screen.blit(score_surface, (10, 10)) # top left corner
 
+        # display highest score 
+        high_score_surface = font.render(f'High score: {self.high_score}', True, 'pink')
+        self.screen.blit(high_score_surface, (10, 50))
+
         # restart message
         if not self.game_active: 
             text_surface = font.render('Press R to restart', True, 'red')
@@ -168,9 +209,21 @@ class Game:
             self.handle_events()
             self.update()
             self.draw()
+            # Check for new high score 
+            if not self.game_active and self.score > self.high_score:
+                self.high_score = self.score 
+                self.save_high_score()
             # Frame rate 
             self.clock.tick(FPS)
 
 if __name__ == '__main__':
-    game = Game()
+    
+    # r to restart, q to quit, space to jump, a to switch on ai mode 
+
+    # Load the AI from the best genome and the config file
+    config_path = os.path.join(os.path.dirname(__file__), 'config.txt')
+    net, config = test_ai(config_path)
+
+    # Pass the AI neural network to the game
+    game = Game(ai_net=net) 
     game.run()
