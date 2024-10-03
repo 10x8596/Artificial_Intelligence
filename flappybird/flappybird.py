@@ -9,7 +9,7 @@ import neat
 class Ball:
 
     def __init__(self):
-        self.x = 100
+        self.x = 350
         self.y = WINDOW_HEIGHT // 2
         self.radius = 20 
         self.velocity = 0
@@ -17,8 +17,8 @@ class Ball:
     def draw(self, surface):
         pygame.draw.circle(surface, WHITE, (self.x, int(self.y)), self.radius)
 
-    def jump(self):
-        self.velocity = FLAP_STRENGTH
+    def jump(self, strength=1):
+        self.velocity = JUMP_STRENGTH * strength
 
     def apply_gravity(self):
         self.velocity += GRAVITY
@@ -29,13 +29,25 @@ class Ball:
 
 class Pipe:
 
-    def __init__(self, speed):
+    def __init__(self, speed, previous_pipe=None):
         self.x = WINDOW_WIDTH
-        self.top_height = random.randint(MIN_PIPE_HEIGHT, MAX_PIPE_HEIGHT)
-        self.bottom_height = WINDOW_HEIGHT - self.top_height - PIPE_GAP
         self.width = PIPE_WIDTH
         self.speed = speed
         self.passed = False
+        self.gap_size = PIPE_GAP
+
+        if previous_pipe:
+            # Constrain the vertical position of the new gap based on the previous pipe
+            previous_gap_y = (previous_pipe.top_height + previous_pipe.bottom_height) / 2
+            new_gap_y = previous_gap_y + random.randint(-MAX_GAP_CHANGE, MAX_GAP_CHANGE)
+            new_gap_y = max(self.gap_size, min(WINDOW_HEIGHT - self.gap_size, new_gap_y))
+        else:
+            # If there's no previous pipe, generate the gap randomly within bounds
+            new_gap_y = random.randint(self.gap_size, WINDOW_HEIGHT - self.gap_size)
+
+        # Calculate top and bottom pipe heights
+        self.top_height = new_gap_y - self.gap_size // 2
+        self.bottom_height = WINDOW_HEIGHT - (new_gap_y + self.gap_size // 2)
 
     def move(self):
         self.x -= self.speed
@@ -136,20 +148,43 @@ class Game:
                 if len(self.pipes) > 0:
                     pipe = self.pipes[0]
                     if pipe.x + pipe.width < self.ball.x and len(self.pipes) > 1:
-                        pipe = self.pipes[1]
+                        pipe = self.pipes[1]  
 
                 # AI decision making based on nn output
+                # Get next pipe
                 top_rect, bottom_rect = pipe.get_rects()
-                output = self.ai_net.activate((self.ball.y, abs(self.ball.y - top_rect.y), abs(self.ball.y - bottom_rect.y)))
-                
+
+                # Calculate the position of the next pipe's gap 
+                center_of_gap = ((top_rect.y + bottom_rect.y) / 2) / WINDOW_HEIGHT
+                distance_to_next_gap = abs(self.ball.y - center_of_gap) / WINDOW_HEIGHT
+
+                # Normalize input values
+                ball_y_norm = self.ball.y / WINDOW_HEIGHT
+                top_pipe_norm = abs(self.ball.y - top_rect.y) / WINDOW_HEIGHT
+                bottom_pipe_norm = abs(self.ball.y - bottom_rect.y) / WINDOW_HEIGHT
+                horizontal_dist = abs(self.ball.x - pipe.x) / WINDOW_WIDTH
+                vertical_dist = abs(self.ball.y - center_of_gap) / WINDOW_HEIGHT 
+                gap_size_norm = PIPE_GAP / WINDOW_HEIGHT
+                if self.ball.velocity != 0:
+                    time_to_top_collision = abs(self.ball.y - top_rect.y) / abs(self.ball.velocity)
+                    time_to_bot_collision = abs(self.ball.y - bottom_rect.y) / abs(self.ball.velocity)
+                else:
+                    time_to_top_collision = float('inf')
+                    time_to_bot_collision = float('inf')
+                safety_margin = min(abs(self.ball.y - top_rect.y), abs(self.ball.y - bottom_rect.y)) / WINDOW_HEIGHT
+                output = self.ai_net.activate((ball_y_norm, top_pipe_norm, bottom_pipe_norm, horizontal_dist, gap_size_norm, time_to_top_collision, time_to_bot_collision, safety_margin, distance_to_next_gap, vertical_dist))
                 if output[0] > 0.5:
-                    self.ball.jump()
+                    jump_strength = min(max(output[0], 0.1), 1)
+                    #if distance_to_center > 0.5:
+                    #    jump_strength = min(max(output[0], 0.1), 2.0)
+                    self.ball.jump(jump_strength)
+ 
 
 #---------------------------------------------------------------------------------------
 
             # pipe movement and adding new pipes 
             if self.pipes[-1].x < WINDOW_WIDTH // 2:
-                self.pipes.append(Pipe(self.pipe_speed))
+                self.pipes.append(Pipe(self.pipe_speed, self.pipes[-1]))
             self.pipes = [pipe for pipe in self.pipes if pipe.x > -PIPE_WIDTH]
 
             # update pipes and check for collision
@@ -173,6 +208,7 @@ class Game:
             # Increase game speed every 30 points
             if self.score > 0 and self.score % SPEED_INCREASE_THRESHOLD == 0:
                 self.pipe_speed = min(self.pipe_speed + 1, MAX_PIPE_SPEED)
+
 
     def draw(self):
         # Draw game 

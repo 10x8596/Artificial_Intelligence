@@ -10,7 +10,7 @@ from flappybird import Pipe
 
 # Inputs = ball.y, top pipe, bottom pipe (3 neurons)
 # Output = jump or fall (1 neuron)
-# Activation func: tanh (if > 0.5 ? jump : fall)
+# Activation func: 1.0, tanh (if > 0.5 ? jump : fall)
 # fitness function: game() from flappybird.py (bird with greatest score will make it to next gen)
 # max generations = 30
 
@@ -71,19 +71,53 @@ def eval_genomes(genomes, config):
         removal_indices = []
         for x, ball in enumerate(balls):
             ball.apply_gravity()
-
+            
+            # Get next pipe
             top_rect, bottom_rect = pipes[pipe_idx].get_rects()
 
-            # neural network output 
-            ge[x].fitness += 0.1
-            output = nets[x].activate((ball.y, abs(ball.y - top_rect.y), abs(ball.y - bottom_rect.y)))
-            if output[0] > 0.5:
-                ball.jump()
+            # Calculate the position of the next pipe's gap 
+            vert_center_of_gap = ((top_rect.y + bottom_rect.y) / 2) / WINDOW_HEIGHT
+            distance_to_next_gap = abs(ball.y - vert_center_of_gap) / WINDOW_HEIGHT
 
-            # check for collision 
+            # Normalize input values
+            ball_y_norm = ball.y / WINDOW_HEIGHT
+            top_pipe_norm = abs(ball.y - top_rect.y) / WINDOW_HEIGHT
+            bottom_pipe_norm = abs(ball.y - bottom_rect.y) / WINDOW_HEIGHT
+            horizontal_dist = abs(ball.x - pipe.x) / WINDOW_WIDTH
+            vertical_dist = abs(ball.y - vert_center_of_gap) / WINDOW_HEIGHT 
+            gap_size_norm = PIPE_GAP / WINDOW_HEIGHT
+            if ball.velocity != 0:
+                time_to_top_collision = abs(ball.y - top_rect.y) / abs(ball.velocity)
+                time_to_bot_collision = abs(ball.y - bottom_rect.y) / abs(ball.velocity)
+            else:
+                time_to_top_collision = float('inf')
+                time_to_bot_collision = float('inf')
+            safety_margin = min(abs(ball.y - top_rect.y), abs(ball.y - bottom_rect.y)) / WINDOW_HEIGHT
+            
+            # Reward AI for being closer to the center of gap 
+            distance_to_center = (horizontal_dist**2 + vertical_dist**2) ** 0.5 
+            # print(f'distance to center: {distance_to_center}')
+
+            # neural network output 
+            ge[x].fitness += max(0, 1 - (distance_to_center / WINDOW_HEIGHT)) 
+            
+            # Add penalties
+            # penalise for collision and getting too close to the edges of the screen
             if ball.collision().colliderect(top_rect) or ball.collision().colliderect(bottom_rect) or ball.y >= WINDOW_HEIGHT or ball.y <= 0:
                 ge[x].fitness -= 1 
                 removal_indices.append(x)
+            if ball.y < 50 or ball.y > WINDOW_HEIGHT - 50:
+                ge[x].fitness -= 1
+            # penalise for large distance to center of gap / being further away
+            if distance_to_center > 0.5:
+                ge[x].fitness -= 1
+
+            output = nets[x].activate((ball_y_norm, top_pipe_norm, bottom_pipe_norm, horizontal_dist, gap_size_norm, time_to_top_collision, time_to_bot_collision, safety_margin, distance_to_next_gap, vertical_dist))
+            if output[0] > 0.5:
+                jump_strength = min(max(output[0], 0.1), 1)
+                #if distance_to_center > 0.5:
+                #    jump_strength = min(max(output[0], 0.1), 2.0)
+                ball.jump(jump_strength)
 
         # remove collided balls 
         for i in sorted(removal_indices, reverse=True):
@@ -93,7 +127,7 @@ def eval_genomes(genomes, config):
 
         # pipe movement and adding new pipes 
         if pipes[-1].x < WINDOW_WIDTH // 2:
-            pipes.append(Pipe(pipe_speed))
+            pipes.append(Pipe(pipe_speed, pipes[-1]))
         for pipe in pipes:
             pipe.move()
         pipes = [pipe for pipe in pipes if pipe.x > -PIPE_WIDTH]
@@ -105,7 +139,7 @@ def eval_genomes(genomes, config):
                     pipe.passed = True
                     score += 1
                     # increase fitness score for ball's that passed 
-                    ge[x].fitness += 5 
+                    ge[x].fitness += 1 
                     
 
         # Increase game speed every 30 points
@@ -140,7 +174,7 @@ def run_neat(config):
     population.add_reporter(stats)
     
     # evaluate genomes up to 100 times
-    best_genome = population.run(eval_genomes, 300)
+    best_genome = population.run(eval_genomes, 100)
 
     # Save the neural network using pickle
     with open("bestgenome.pickle", "wb") as f:
