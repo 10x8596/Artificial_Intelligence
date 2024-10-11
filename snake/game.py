@@ -235,6 +235,24 @@ class Game(gym.Env):
 
         pygame.quit()
 
+    def visTraining(self):
+        """Visualise the AI training"""
+
+        self.screen.fill((0,0,0))
+        self.draw_snake()
+        self.draw_food()
+        self.draw_score()
+
+        #if not self.game_over:
+            #self.draw_snake()
+            #self.draw_food()
+            #self.draw_score()
+        #else:
+            #self.reset_game()
+
+        pygame.display.flip()
+        self.clock.tick(120)
+
 if __name__ == '__main__':
     game = Game()
     game.run()
