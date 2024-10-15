@@ -1,11 +1,8 @@
-import pygame
+import pygame, gym, torch, colorsys
 import random as rnd
 from pygame.math import Vector2
-from scipy.interpolate import splprep, splev
 import numpy as np
-import gym 
 from gym import spaces
-import torch
 import torch.nn as nn 
 import torch.optim as optim
 from model import DQN
@@ -23,11 +20,18 @@ class Game(gym.Env):
         pygame.display.set_caption('Snake Game AI')
         self.clock = pygame.time.Clock()
         self.font = pygame.font.SysFont(None, 48)
+        self.grid_size = 20 # grid cell in pixels
 
         # Snake properties
         self.snake_radius = 10
         self.initial_snake_length = 5
-        self.snake_speed = self.snake_radius * 2.5
+        # Create surfaces for the snake's head and body 
+        self.head_surface = pygame.Surface((self.grid_size, self.grid_size))
+        self.head_surface.fill((255,255,255))
+        self.body_surface = pygame.Surface((self.grid_size, self.grid_size))
+        self.body_surface.fill((0, 255, 0))
+        # move one grid cell at a time
+        self.snake_speed = self.grid_size
         self.direction = Vector2(1, 0)  # Start moving to the right
         self.growing = False
 
@@ -98,8 +102,12 @@ class Game(gym.Env):
 
     def reset_game(self):
         """Reset game to initial state"""
-        self.start_pos = Vector2(360, 200)
-        self.snake_body = [self.start_pos - Vector2(i * self.snake_speed, 0) for i in range(self.initial_snake_length)]
+         # Align starting position to the grid
+        self.start_pos = Vector2(self.screen_width // 2, self.screen_height // 2)
+        self.start_pos.x = (self.start_pos.x // self.grid_size) * self.grid_size + self.grid_size // 2
+        self.start_pos.y = (self.start_pos.y // self.grid_size) * self.grid_size + self.grid_size // 2
+
+        self.snake_body = [self.start_pos - Vector2(i * self.snake_speed * self.direction.x, i * self.snake_speed * self.direction.y) for i in range(self.initial_snake_length)]
         self.direction = Vector2(1, 0)
         self.food_position = self.spawn_food()
         self.score = 0
@@ -197,7 +205,8 @@ class Game(gym.Env):
         """Get the current state of the game"""
         head = self.snake_body[0]
         food = self.food_position
-        return np.array([head.x, head.y, self.direction.x, self.direction.y, food.x, food.y], dtype=np.float32)
+        return np.array([head.x, head.y, self.direction.x, self.direction.y, food.x, food.y], 
+                        dtype=np.float32)
 
     def update_speed(self):
         """Adjust the snake's movement speed based on the score."""
@@ -239,36 +248,68 @@ class Game(gym.Env):
         # Prevent reversing direction
         if (new_direction + self.direction) != Vector2(0, 0):
             self.direction = new_direction
+    
+    def draw_grid(self):
+        """Draw grid lines on the game window"""
+        # Set the color for the grid lines 
+        grid_color = (40, 40, 40) # Dark gray color 
+        for x in range(0, self.screen_width, self.grid_size):
+            pygame.draw.line(self.screen, grid_color, (x, 0), (x, self.screen_height))
+        for y in range(0, self.screen_height, self.grid_size):
+            pygame.draw.line(self.screen, grid_color, (0, y), (self.screen_width, y))
+
+    def get_gradient_colors(self, num_segments, time_step):
+        """Generate a list of gradient colors for the snake's body"""
+        colors = []
+        for i in range(num_segments):
+            # Calculate a hue value that changes over time and position 
+            hue = (270 + (i * 10 + time_step)) % 360 # speed multiplier
+            saturation = 1.0
+            brightness = 1.0
+            # Normalize hue to [0, 1]
+            hue_norm = hue / 360 
+            # Convert HSV to RGB
+            color = self.hsv_to_rgb(hue_norm, saturation, brightness)
+            colors.append(color)
+        return colors
+
+    def hsv_to_rgb(self, h, s, v):
+        """Convert HSV color to RGB"""
+        r, g, b = colorsys.hsv_to_rgb(h, s, v)
+        return int(r * 255), int(g * 255), int(b * 255)
 
     def draw_snake(self):
-        head_color = (255, 255, 255)  # White
-        body_color = (0, 255, 0)      # Green
 
-        x = [segment.x for segment in self.snake_body][::-1]
-        y = [segment.y for segment in self.snake_body][::-1]
+        num_segments = len(self.snake_body)
+        time_step = pygame.time.get_ticks() / 100 # adjust to control speed
+        colors = self.get_gradient_colors(num_segments, time_step)
 
-        if len(self.snake_body) > 3:
-            tck, _ = splprep([x, y], s=0, k=3)
-            unew = np.linspace(0, 1.0, num=200)
-            out = splev(unew, tck)
-            spline_points = list(zip(out[0], out[1]))
-
-            body_thickness = self.snake_radius
-            for point in spline_points:
-                pos = (int(point[0]), int(point[1]))
-                pygame.draw.circle(self.screen, body_color, pos, body_thickness)
-        else:
-            for segment in self.snake_body:
-                pos = (int(segment.x), int(segment.y))
-                pygame.draw.circle(self.screen, body_color, pos, self.snake_radius * 2)
-
-        # Draw the head
-        head_pos = (int(self.snake_body[0].x), int(self.snake_body[0].y))
-        pygame.draw.circle(self.screen, head_color, head_pos, self.snake_radius + 2)
+        for idx, segment in enumerate(self.snake_body):
+            pos = (
+                int(segment.x - self.grid_size // 2), 
+                int(segment.y - self.grid_size // 2)
+            )
+            # get the color for this segment 
+            color = colors[idx]
+            pygame.draw.rect(self.screen, color, 
+                             pygame.Rect(pos[0], pos[1], self.grid_size, self.grid_size))
+        
+    def spawn_food(self):
+        """Randomly spawn food aligned to the grid"""
+        max_x = (self.screen_width - self.grid_size) // self.grid_size 
+        max_y = (self.screen_height - self.grid_size) // self.grid_size 
+        while True:
+            x = rnd.randint(0, max_x) * self.grid_size + self.grid_size // 2 
+            y = rnd.randint(0, max_y) * self.grid_size + self.grid_size // 2 
+            position = Vector2(x, y)
+            if all(segment.distance_to(position) > (self.snake_radius + self.food_radius) for segment in self.snake_body):
+                return position
 
     def draw_food(self):
-        pos = (int(self.food_position.x), int(self.food_position.y))
-        pygame.draw.circle(self.screen, (255, 0, 0), pos, self.food_radius)
+        pos = (int(self.food_position.x - self.grid_size // 2), 
+               int(self.food_position.y - self.grid_size // 2))
+        pygame.draw.rect(self.screen, (255, 0, 0), 
+                         pygame.Rect(pos[0], pos[1], self.grid_size, self.grid_size))
 
     def draw_score(self):
         score_text = self.font.render(f"Score: {self.score}", True, (255, 255, 255))
@@ -289,6 +330,7 @@ class Game(gym.Env):
         running = True
         while running:
             self.screen.fill((0, 0, 0))  # Clear screen with black
+            self.draw_grid()
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -332,7 +374,7 @@ class Game(gym.Env):
                 self.draw_game_over()
 
             pygame.display.flip()
-            self.clock.tick(120)  # Control the frame rate
+            self.clock.tick(100)  # Control the frame rate
 
         pygame.quit()
 
@@ -355,7 +397,7 @@ class Game(gym.Env):
             #self.reset_game()
 
         pygame.display.flip()
-        self.clock.tick(120)
+        self.clock.tick(100)
 
 if __name__ == '__main__':
 

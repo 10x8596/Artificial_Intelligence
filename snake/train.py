@@ -111,7 +111,7 @@ def train(episodes, visTraining=True):
     env.close()
 
 # Train the model 
-train(250, visTraining=True)
+train(1000, visTraining=True)
 
 
 
