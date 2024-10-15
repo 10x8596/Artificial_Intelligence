@@ -5,10 +5,14 @@ from scipy.interpolate import splprep, splev
 import numpy as np
 import gym 
 from gym import spaces
+import torch
+import torch.nn as nn 
+import torch.optim as optim
+from model import DQN
 
 class Game(gym.Env): 
-
-    def __init__(self):
+    
+    def __init__(self, ai_mode=False, model_path='dqn_final_model.pth'):
         super(Game, self).__init__()
         # Initialize Pygame
         pygame.init()
@@ -35,16 +39,62 @@ class Game(gym.Env):
         self.score = 0
         self.game_over = False
 
-        # Define action space (4 directions: up, down, left, right)
-        self.action_space = spaces.Discrete(4)
+        # Define action space (3 actions: move forward, turn left or right)
+        self.action_space = spaces.Discrete(3)
 
         # Define observation space (snake head (x,y), direction (x,y), food (x,y))
         self.observation_space = spaces.Box(low=0, high=800, shape=(6,), dtype=np.float32)
         
         #self.MOVE_EVENT = pygame.USEREVENT + 1.
 
+        # AI mode flag 
+        self.ai_mode = ai_mode
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = DQN().to(self.device)
+
+        if self.ai_mode:
+            # Initialize and load the trained model 
+            try:
+                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            except FileNotFoundError:
+                print(f"Model file '{model_path}' not found.")
+                exit()
+            self.model.eval()
+
         # Start the game
         self.reset_game()
+
+    def eval(env, model, episodes=5):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        total_rewards = []
+        for _ in range(episodes):
+            state = env.reset()
+            done = False 
+            episode_reward = 0 
+
+            while not done:
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    q_values = model(state_tensor)
+                    action = q_values.argmax().item()
+
+                state, reward, done, _ = env.step(action)
+                episode_reward += reward
+                env.visTraining()
+
+            total_rewards.append(episode_reward)
+        average_reward = sum(total_rewards) / episodes 
+        return average_reward
+
+    def get_ai_action(self):
+        # get current state 
+        state = self.get_observation()
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+        # get action from the model 
+        with torch.no_grad():
+            q_values = self.model(state_tensor)
+            action = q_values.argmax().item()
+        return action
 
     def reset_game(self):
         """Reset game to initial state"""
@@ -93,14 +143,34 @@ class Game(gym.Env):
 
     def step(self, action):
         """Execute one step in the environment"""
-        if action == 0: # up 
-            self.direction = Vector2(0, -1)
-        elif action == 1: # Down 
-            self.direction = Vector2(0, 1)
-        elif action == 2: # Left 
-            self.direction = Vector2(-1, 0)
-        elif action == 3: # Right 
-            self.direction = Vector2(1, 0)
+        # Define possible directions
+        direction_mappings = {
+            (0, -1): {'left': Vector2(-1, 0), 'right': Vector2(1, 0)},  # Up
+            (0, 1): {'left': Vector2(1, 0), 'right': Vector2(-1, 0)},   # Down
+            (-1, 0): {'left': Vector2(0, 1), 'right': Vector2(0, -1)},  # Left
+            (1, 0): {'left': Vector2(0, -1), 'right': Vector2(0, 1)},   # Right
+        }
+
+        # Get the current direction as a tuple
+        current_direction = (int(self.direction.x), int(self.direction.y))
+
+        # Determine new direction based on the action 
+        if action == 0: # Move forward
+            new_direction = self.direction
+        elif action == 1: # Turn left 
+            new_direction = direction_mappings[current_direction]['left']
+        elif action == 2: # Turn right 
+            new_direction = direction_mappings[current_direction]['right']
+        else:
+            new_direction = self.direction 
+        self.direction = new_direction
+
+        # Previous distance to food 
+        prev_distance = np.linalg.norm([self.snake_body[0].x - self.food_position.x,
+                                        self.snake_body[0].y - self.food_position.y])
+        # new distance to food
+        new_distance = np.linalg.norm([self.snake_body[0].x - self.food_position.x,
+                                       self.snake_body[0].y - self.food_position.y])
 
         self.move_snake()
         done = False 
@@ -108,11 +178,17 @@ class Game(gym.Env):
 
         # check for collisions and reward accordingly
         if self.check_food_collision():
-            reward = 1 
+            reward += 1 
         if self.check_collision():
-            reward = -1.5
-            done = True 
-
+            reward -= 1.5
+        else:
+            # small reward for moving closer to the food 
+            if new_distance < prev_distance:
+                reward += 0.1
+            else:
+                reward -= 0.1
+        
+        done = self.game_over 
         # Return the current state, reward, done flag, and info dict 
         observation = self.get_observation()
         return observation, reward, done, {}
@@ -203,6 +279,11 @@ class Game(gym.Env):
         text_rect = game_over_text.get_rect(center=(self.screen_width // 2, self.screen_height // 2))
         self.screen.blit(game_over_text, text_rect)
 
+    def draw_ai_mode(self):
+        mode_text = "AI Mode" if self.ai_mode else "Manual Mode"
+        mode_surface = self.font.render(mode_text, True, (255, 255, 0))
+        self.screen.blit(mode_surface, (10, 50))
+
     def run(self):
         #reset_game()
         running = True
@@ -213,6 +294,21 @@ class Game(gym.Env):
                 if event.type == pygame.QUIT:
                     running = False
                 if event.type == (pygame.USEREVENT + 1) and not self.game_over:
+                    if self.ai_mode:
+                        action = self.get_ai_action()
+                        # Map action to direction 
+                        if action == 0: # up 
+                            self.direction = Vector2(0, -1)
+                        elif action == 1:  # Down
+                            self.direction = Vector2(0, 1)
+                        elif action == 2:  # Left
+                            self.direction = Vector2(-1, 0)
+                        elif action == 3:  # Right
+                            self.direction = Vector2(1, 0)
+                    else:
+                        self.handle_input()  
+                        # Handle user input
+
                     self.move_snake()
                     if self.check_collision():
                         self.game_over = True
@@ -221,12 +317,17 @@ class Game(gym.Env):
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r and self.game_over:
                         self.reset_game()
+                    # toggle ai mode with 'i' key 
+                    if event.key == pygame.K_i:
+                        self.ai_mode = not self.ai_mode 
+                        print(f"AI Mode {'Enabled' if self.ai_mode else 'Disabled'}")
 
             if not self.game_over:
                 self.handle_input()
                 self.draw_snake()
                 self.draw_food()
                 self.draw_score()
+                self.draw_ai_mode()
             else:
                 self.draw_game_over()
 
@@ -237,6 +338,9 @@ class Game(gym.Env):
 
     def visTraining(self):
         """Visualise the AI training"""
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
 
         self.screen.fill((0,0,0))
         self.draw_snake()
@@ -254,6 +358,17 @@ class Game(gym.Env):
         self.clock.tick(120)
 
 if __name__ == '__main__':
-    game = Game()
+
+    # to run the file/game in ai mode run 
+    # $ python game.py ai
+
+    import sys 
+
+    ai_mode = False 
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'ai':
+            ai_mode = True
+
+    game = Game(ai_mode=ai_mode)
     game.run()
 
