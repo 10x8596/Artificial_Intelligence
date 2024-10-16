@@ -36,10 +36,11 @@ def train(episodes, visTraining=True):
         total_reward = 0 
 
         while not done:
-            state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+            
             if np.random.random() < epsilon:
                 action = env.action_space.sample()
             else:
+                state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
                 with torch.no_grad():
                     q_values = dqn(state_tensor)
                     action = q_values.argmax().item()
@@ -111,7 +112,7 @@ def train(episodes, visTraining=True):
     env.close()
 
 # Train the model 
-train(1000, visTraining=True)
+train(800, visTraining=True)
 
 
 

@@ -35,7 +35,7 @@ class Game(gym.Env):
         self.direction = Vector2(1, 0)  # Start moving to the right
         self.growing = False
 
-        # Food properties
+# Food properties
         self.food_radius = 10
         self.food_position = None
 
@@ -173,12 +173,10 @@ class Game(gym.Env):
             new_direction = self.direction 
         self.direction = new_direction
 
-        # Previous distance to food 
-        prev_distance = np.linalg.norm([self.snake_body[0].x - self.food_position.x,
-                                        self.snake_body[0].y - self.food_position.y])
-        # new distance to food
-        new_distance = np.linalg.norm([self.snake_body[0].x - self.food_position.x,
-                                       self.snake_body[0].y - self.food_position.y])
+        # Previous distance to food using Euclidean distance
+        prev_distance = self.snake_body[0].distance_to(self.food_position)
+        # New distance to food using Euclidean distance
+        new_distance = self.snake_body[0].distance_to(self.food_position)
 
         self.move_snake()
         done = False 
@@ -385,16 +383,10 @@ class Game(gym.Env):
                 pygame.quit()
 
         self.screen.fill((0,0,0))
+        self.draw_grid()
         self.draw_snake()
         self.draw_food()
         self.draw_score()
-
-        #if not self.game_over:
-            #self.draw_snake()
-            #self.draw_food()
-            #self.draw_score()
-        #else:
-            #self.reset_game()
 
         pygame.display.flip()
         self.clock.tick(100)
