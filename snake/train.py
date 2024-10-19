@@ -16,7 +16,7 @@ def train(episodes, visTraining=True):
     target_dqn.load_state_dict(dqn.state_dict())
     optimizer = optim.Adam(dqn.parameters(), lr=0.001)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.9)
-    loss_fn = nn.MSELoss()
+    loss_fn = nn.SmoothL1Loss()
 
     replay_buffer = deque(maxlen=10000)
     gamma = 0.99
@@ -82,13 +82,12 @@ def train(episodes, visTraining=True):
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                scheduler.step()
 
                 # Update the target network periodically
                 if total_steps % target_update_frequency == 0:
                     target_dqn.load_state_dict(dqn.state_dict())
 
-            state = next_state
+            #state = next_state -- remove
             
             # visualise the AI playing in rendering enabled
             if visTraining and total_steps % 10 == 0:
@@ -96,7 +95,7 @@ def train(episodes, visTraining=True):
 
         # decay epsilon 
         epsilon = max(epsilon_end, epsilon * epsilon_decay)
-
+        scheduler.step()
         print(f"Episode {episode + 1}, Total Reward: {total_reward}, Epsilon: {epsilon:.4f}")
 
         # save the model every 100 episodes

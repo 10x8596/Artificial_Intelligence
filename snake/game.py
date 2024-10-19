@@ -6,6 +6,7 @@ from gym import spaces
 import torch.nn as nn 
 import torch.optim as optim
 from model import DQN
+from a_star import * 
 
 class Game(gym.Env): 
     
@@ -35,6 +36,13 @@ class Game(gym.Env):
         self.direction = Vector2(1, 0)  # Start moving to the right
         self.growing = False
 
+        # Walls
+        self.walls = []
+        self.wall_spawn_interval = 5000 # time in ms
+        self.last_wall_spawn_time = pygame.time.get_ticks()
+        self.wall_size = self.grid_size
+        self.max_walls=20
+
 # Food properties
         self.food_radius = 10
         self.food_position = None
@@ -46,8 +54,14 @@ class Game(gym.Env):
         # Define action space (3 actions: move forward, turn left or right)
         self.action_space = spaces.Discrete(3)
 
-        # Define observation space (snake head (x,y), direction (x,y), food (x,y))
-        self.observation_space = spaces.Box(low=0, high=800, shape=(6,), dtype=np.float32)
+        # Define observation space (snake head (x,y), direction (x,y), food (x,y), walls)
+        wall_obs_size = self.max_walls * 2
+        self.observation_space = spaces.Box(
+                low=0, 
+                high=800, 
+                shape=(6 + wall_obs_size,), 
+                dtype=np.float32
+        )
         
         #self.MOVE_EVENT = pygame.USEREVENT + 1.
 
@@ -91,14 +105,129 @@ class Game(gym.Env):
         return average_reward
 
     def get_ai_action(self):
-        # get current state 
-        state = self.get_observation()
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
-        # get action from the model 
-        with torch.no_grad():
-            q_values = self.model(state_tensor)
-            action = q_values.argmax().item()
-        return action
+        path = self.get_next_move()
+        if path:
+            next_cell = path[0]
+            current_cell = (int(self.snake_body[0].x // self.grid_size), int(self.snake_body[0].y // self.grid_size))
+            dx = next_cell[0] - current_cell[0]
+            dy = next_cell[1] - current_cell[1]
+            # Map the movement to an action (0: Forward, 1: Left, 2: Right)
+            action = self.map_direction_to_action(dx, dy)
+            return action
+        else:
+            # No path found, take default action 
+            return 0 # move forward
+    
+    def get_next_move(self):
+        grid = self.create_grid()
+        start = (int(self.snake_body[0].x // self.grid_size), int(self.snake_body[0].y // self.grid_size))
+        goal = (int(self.food_position.x // self.grid_size), int(self.food_position.y // self.grid_size))
+        path = a_star_search(start, goal, grid)
+        return path
+
+    def map_direction_to_action(self, dx, dy):
+        """
+        Map the desired movement direction (dx, dy) to an action 
+        (0: Forward, 1: Left, 2: Right), based on the snake's 
+        current direction 
+        """
+        # Get the current direction as a tuple
+        current_direction = (int(self.direction.x), int(self.direction.y))
+        optimal_direction = (dx, dy)
+
+        # If the optimal direction is the same as the current_direction, move forward
+        if optimal_direction == current_direction:
+            return 0 
+        # Define the possible directions in order 
+        directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]  # Up, Right, Down, Left
+        # Get indices of current and best direction 
+        current_idx = directions.index(current_direction)
+        optimal_idx = directions.index(optimal_direction)
+
+        # Calculate the difference in indices 
+        diff = (optimal_idx - current_idx) % 4
+        if diff == 1:
+            return 2 # turn right 
+        elif diff == 3:
+            return 1 # turn left 
+        else: 
+            # the snake cannot reverse direction (diff == 2), so return forward 
+            return 0
+
+    def update_direction(self, action):
+        """Update the snake's direction based on the action."""
+        # Define possible directions
+        direction_mappings = {
+            (0, -1): {'left': Vector2(-1, 0), 'right': Vector2(1, 0)},  # Up
+            (0, 1): {'left': Vector2(1, 0), 'right': Vector2(-1, 0)},   # Down
+            (-1, 0): {'left': Vector2(0, 1), 'right': Vector2(0, -1)},  # Left
+            (1, 0): {'left': Vector2(0, -1), 'right': Vector2(0, 1)},   # Right
+        }
+    
+        # Get the current direction as a tuple
+        current_direction = (int(self.direction.x), int(self.direction.y))
+    
+        # Determine new direction based on the action 
+        if action == 0:  # Move forward
+            new_direction = self.direction
+        elif action == 1:  # Turn left
+            new_direction = direction_mappings[current_direction]['left']
+        elif action == 2:  # Turn right
+            new_direction = direction_mappings[current_direction]['right']
+        else:
+            new_direction = self.direction  # Default to moving forward if action is invalid
+    
+        self.direction = new_direction
+
+    def step(self, action):
+        """Execute one step in the environment"""
+        # Update the snake's direction based on the action 
+        self.update_direction(action)
+
+        # Previous distance to food using Euclidean distance
+        prev_distance = self.snake_body[0].distance_to(self.food_position)
+        # New distance to food using Euclidean distance
+        new_distance = self.snake_body[0].distance_to(self.food_position)
+
+        self.move_snake()
+        done = False 
+        reward = 0 
+
+        # check for collisions and reward accordingly
+        if self.check_food_collision():
+            reward += 2 
+        if self.check_collision():
+            reward -= 10
+            done = True
+            self.game_over = True
+        else:
+            # small penalty to encourage faster completion
+            reward -= 0.05
+            # small reward for moving closer to the food 
+            if new_distance < prev_distance:
+                reward += 0.1
+            else:
+                reward -= 0.1
+        # Return the current state, reward, done flag, and info dict 
+        observation = self.get_observation()
+        return observation, reward, done, {}
+
+    def get_observation(self):
+        """Get the current state of the game"""
+        head = self.snake_body[0]
+        food = self.food_position
+        walls = []
+        for wall in self.walls:
+            walls.extend([wall.x, wall.y])
+        # Pad walls to maximum number
+        while len(walls) < self.max_walls * 2:
+            walls.extend([0, 0])  # Use zeros or a specific value to indicate no wall
+
+        observation = np.array(
+            [head.x, head.y, self.direction.x, self.direction.y, food.x, food.y] + walls,
+            dtype=np.float32
+        )
+        return observation
 
     def reset_game(self):
         """Reset game to initial state"""
@@ -113,6 +242,7 @@ class Game(gym.Env):
         self.score = 0
         self.game_over = False
         self.growing = False
+        self.walls = []
 
         pygame.time.set_timer(pygame.USEREVENT + 1, 150) # starting speed 
 
@@ -149,63 +279,6 @@ class Game(gym.Env):
         else:
             self.growing = False
 
-    def step(self, action):
-        """Execute one step in the environment"""
-        # Define possible directions
-        direction_mappings = {
-            (0, -1): {'left': Vector2(-1, 0), 'right': Vector2(1, 0)},  # Up
-            (0, 1): {'left': Vector2(1, 0), 'right': Vector2(-1, 0)},   # Down
-            (-1, 0): {'left': Vector2(0, 1), 'right': Vector2(0, -1)},  # Left
-            (1, 0): {'left': Vector2(0, -1), 'right': Vector2(0, 1)},   # Right
-        }
-
-        # Get the current direction as a tuple
-        current_direction = (int(self.direction.x), int(self.direction.y))
-
-        # Determine new direction based on the action 
-        if action == 0: # Move forward
-            new_direction = self.direction
-        elif action == 1: # Turn left 
-            new_direction = direction_mappings[current_direction]['left']
-        elif action == 2: # Turn right 
-            new_direction = direction_mappings[current_direction]['right']
-        else:
-            new_direction = self.direction 
-        self.direction = new_direction
-
-        # Previous distance to food using Euclidean distance
-        prev_distance = self.snake_body[0].distance_to(self.food_position)
-        # New distance to food using Euclidean distance
-        new_distance = self.snake_body[0].distance_to(self.food_position)
-
-        self.move_snake()
-        done = False 
-        reward = 0 
-
-        # check for collisions and reward accordingly
-        if self.check_food_collision():
-            reward += 1 
-        if self.check_collision():
-            reward -= 1.5
-        else:
-            # small reward for moving closer to the food 
-            if new_distance < prev_distance:
-                reward += 0.1
-            else:
-                reward -= 0.1
-        
-        done = self.game_over 
-        # Return the current state, reward, done flag, and info dict 
-        observation = self.get_observation()
-        return observation, reward, done, {}
-
-    def get_observation(self):
-        """Get the current state of the game"""
-        head = self.snake_body[0]
-        food = self.food_position
-        return np.array([head.x, head.y, self.direction.x, self.direction.y, food.x, food.y], 
-                        dtype=np.float32)
-
     def update_speed(self):
         """Adjust the snake's movement speed based on the score."""
         base_interval = 150  # Starting speed
@@ -217,9 +290,15 @@ class Game(gym.Env):
 
     def check_collision(self):
         head = self.snake_body[0]
+        # Collision with self
         for segment in self.snake_body[1:]:
-            if head.distance_to(segment) < self.snake_radius:
-                return True
+            if head == segment: return True
+        # Collision with walls
+        for wall in self.walls:
+            if head == wall: return True
+        # Collision with boundaries (if applicable)
+        if (head.x < 0 or head.x >= self.screen_width or
+            head.y < 0 or head.y >= self.screen_height): return True
         return False
 
     def check_food_collision(self):
@@ -255,6 +334,26 @@ class Game(gym.Env):
             pygame.draw.line(self.screen, grid_color, (x, 0), (x, self.screen_height))
         for y in range(0, self.screen_height, self.grid_size):
             pygame.draw.line(self.screen, grid_color, (0, y), (self.screen_width, y))
+
+    def create_grid(self):
+        """Helper for A* algorithm"""
+        grid_width = self.screen_width // self.grid_size
+        grid_height = self.screen_height // self.grid_size
+        grid = [[0 for _ in range(grid_height)] for _ in range(grid_width)]
+
+        # mark walls as obstacles
+        for wall in self.walls:
+            x = int(wall.x // self.grid_size)
+            y = int(wall.y // self.grid_size)
+            grid[x][y] = 1 # 1 = obstacle 
+
+        # mark the snakes body as obstacles 
+        for segment in self.snake_body:
+            x = int(segment.x // self.grid_size)
+            y = int(segment.y // self.grid_size)
+            grid[x][y] = 1
+
+        return grid 
 
     def get_gradient_colors(self, num_segments, time_step):
         """Generate a list of gradient colors for the snake's body"""
@@ -309,6 +408,31 @@ class Game(gym.Env):
         pygame.draw.rect(self.screen, (255, 0, 0), 
                          pygame.Rect(pos[0], pos[1], self.grid_size, self.grid_size))
 
+    def spawn_walls(self):
+        """Spawn a wall at a random position not occupied by the snake or food"""
+        if len(self.walls) >= self.max_walls:
+            return
+        max_x = (self.screen_width - self.grid_size) // self.grid_size
+        max_y = (self.screen_height - self.grid_size) // self.grid_size
+        while True:
+            x = rnd.randint(0, max_x) * self.grid_size + self.grid_size // 2
+            y = rnd.randint(0, max_y) * self.grid_size + self.grid_size // 2
+            position = Vector2(x, y)
+
+            # Ensure the wall doesn't spawn on the snake or food
+            occupied = any(segment == position for segment in self.snake_body)
+            occupied = occupied or position == self.food_position
+            occupied = occupied or any(wall == position for wall in self.walls)
+            if not occupied:
+                self.walls.append(position)
+                break
+
+    def draw_walls(self):
+        wall_color = (128, 128, 128)  # Gray color for walls
+        for wall in self.walls:
+            pos = (int(wall.x - self.grid_size // 2), int(wall.y - self.grid_size // 2))
+            pygame.draw.rect(self.screen, wall_color, pygame.Rect(pos[0], pos[1], self.grid_size, self.grid_size))
+
     def draw_score(self):
         score_text = self.font.render(f"Score: {self.score}", True, (255, 255, 255))
         self.screen.blit(score_text, (10, 10))
@@ -327,8 +451,14 @@ class Game(gym.Env):
         #reset_game()
         running = True
         while running:
+            current_time = pygame.time.get_ticks()
             self.screen.fill((0, 0, 0))  # Clear screen with black
             self.draw_grid()
+            self.draw_walls()
+
+            if current_time - self.last_wall_spawn_time > self.wall_spawn_interval:
+                self.spawn_walls()
+                self.last_wall_spawn_time = current_time
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -336,24 +466,21 @@ class Game(gym.Env):
                 if event.type == (pygame.USEREVENT + 1) and not self.game_over:
                     if self.ai_mode:
                         action = self.get_ai_action()
-                        # Map action to direction 
-                        if action == 0: # up 
-                            self.direction = Vector2(0, -1)
-                        elif action == 1:  # Down
-                            self.direction = Vector2(0, 1)
-                        elif action == 2:  # Left
-                            self.direction = Vector2(-1, 0)
-                        elif action == 3:  # Right
-                            self.direction = Vector2(1, 0)
+                        # Use the step fn to process the action 
+                        obseravtion, reward, done, _ = self.step(action)
+                        if self.check_collision():
+                            self.game_over = True 
+                        if self.check_food_collision():
+                            self.food_position = self.spawn_food()
                     else:
                         self.handle_input()  
                         # Handle user input
+                        self.move_snake()
+                        if self.check_collision():
+                            self.game_over = True
+                        if self.check_food_collision():
+                            self.food_position = self.spawn_food()
 
-                    self.move_snake()
-                    if self.check_collision():
-                        self.game_over = True
-                    if self.check_food_collision():
-                        self.food_position = self.spawn_food()
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r and self.game_over:
                         self.reset_game()
@@ -384,6 +511,7 @@ class Game(gym.Env):
 
         self.screen.fill((0,0,0))
         self.draw_grid()
+        self.draw_walls()
         self.draw_snake()
         self.draw_food()
         self.draw_score()

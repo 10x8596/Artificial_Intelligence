@@ -7,7 +7,9 @@ import random as rnd
 class DQN(nn.Module):
     def __init__(self):
         super(DQN, self).__init__()
-        self.fc1 = nn.Linear(6, 256)
+        self.max_walls = 20
+        input_size = 6 + self.max_walls * 2 
+        self.fc1 = nn.Linear(input_size, 256)
         self.ln1 = nn.LayerNorm(256)
         self.fc2 = nn.Linear(256, 256)
         self.ln2 = nn.LayerNorm(256)
